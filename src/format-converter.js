@@ -148,19 +148,41 @@ export function removeTrailingThinkingBlocks(content) {
 }
 
 /**
+ * Sanitize a thinking block by removing extra fields like cache_control.
+ * Only keeps: type, thinking, signature
+ */
+function sanitizeAnthropicThinkingBlock(block) {
+    if (!block || block.type !== 'thinking') return block;
+
+    const sanitized = { type: 'thinking' };
+    if (block.thinking !== undefined) sanitized.thinking = block.thinking;
+    if (block.signature !== undefined) sanitized.signature = block.signature;
+    return sanitized;
+}
+
+/**
  * Filter thinking blocks: keep only those with valid signatures.
  * Blocks without signatures are dropped (API requires signatures).
+ * Also sanitizes blocks to remove extra fields like cache_control.
  */
 export function restoreThinkingSignatures(content) {
     if (!Array.isArray(content)) return content;
 
     const originalLength = content.length;
-    const filtered = content.filter(block => {
-        if (!block || block.type !== 'thinking') return true;
+    const filtered = [];
 
-        // Keep blocks with valid signatures (>= 50 chars)
-        return block.signature && block.signature.length >= 50;
-    });
+    for (const block of content) {
+        if (!block || block.type !== 'thinking') {
+            filtered.push(block);
+            continue;
+        }
+
+        // Keep blocks with valid signatures (>= 50 chars), sanitized
+        if (block.signature && block.signature.length >= 50) {
+            filtered.push(sanitizeAnthropicThinkingBlock(block));
+        }
+        // Unsigned thinking blocks are dropped
+    }
 
     if (filtered.length < originalLength) {
         console.log(`[FormatConverter] Dropped ${originalLength - filtered.length} unsigned thinking block(s)`);
@@ -190,7 +212,8 @@ export function reorderAssistantContent(content) {
         if (!block) continue;
 
         if (block.type === 'thinking') {
-            thinkingBlocks.push(block);
+            // Sanitize thinking blocks to remove cache_control and other extra fields
+            thinkingBlocks.push(sanitizeAnthropicThinkingBlock(block));
         } else if (block.type === 'tool_use') {
             toolUseBlocks.push(block);
         } else if (block.type === 'text') {
