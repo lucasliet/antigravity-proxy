@@ -6,14 +6,18 @@
  * - SSE events are properly formatted
  * - signature_delta events are present
  * - Thinking blocks accumulate correctly across deltas
+ *
+ * Runs for both Claude and Gemini model families.
  */
 const { streamRequest, analyzeContent, analyzeEvents, commonTools } = require('./helpers/http-client.cjs');
+const { getTestModels, getModelConfig } = require('./helpers/test-models.cjs');
 
 const tools = [commonTools.executeCommand];
 
-async function runTests() {
+async function runTestsForModel(family, model) {
     console.log('='.repeat(60));
-    console.log('MULTI-TURN TOOL CALL TEST (STREAMING)');
+    console.log(`MULTI-TURN TOOL CALL TEST [${family.toUpperCase()}]`);
+    console.log(`Model: ${model}`);
     console.log('Simulates Claude Code streaming conversation');
     console.log('='.repeat(60));
     console.log('');
@@ -21,6 +25,7 @@ async function runTests() {
     let messages = [];
     let allPassed = true;
     const results = [];
+    const modelConfig = getModelConfig(family);
 
     // ===== TURN 1: Initial request =====
     console.log('TURN 1: User asks to run a command');
@@ -32,11 +37,11 @@ async function runTests() {
     });
 
     const turn1 = await streamRequest({
-        model: 'claude-sonnet-4-5-thinking',
-        max_tokens: 16000,
+        model,
+        max_tokens: modelConfig.max_tokens,
         stream: true,
         tools,
-        thinking: { type: 'enabled', budget_tokens: 10000 },
+        thinking: modelConfig.thinking,
         messages
     });
 
@@ -50,7 +55,7 @@ async function runTests() {
 
         console.log('  Content:');
         console.log(`    Thinking: ${content.hasThinking ? 'YES' : 'NO'} (${content.thinking.length} blocks)`);
-        console.log(`    Signature: ${content.thinkingHasSignature ? 'YES' : 'NO'}`);
+        console.log(`    Signature: ${content.hasSignature ? 'YES' : 'NO'}`);
         console.log(`    Tool Use: ${content.hasToolUse ? 'YES' : 'NO'} (${content.toolUse.length} calls)`);
 
         console.log('  Events:');
@@ -67,9 +72,11 @@ async function runTests() {
             console.log(`  Tool: ${content.toolUse[0].name}(${JSON.stringify(content.toolUse[0].input)})`);
         }
 
-        const passed = content.hasThinking && content.thinkingHasSignature &&
-                       events.signatureDeltas > 0 && content.hasToolUse;
-        results.push({ name: 'Turn 1: Thinking + Signature + Tool Use + Events', passed });
+        // For Claude: signature is on thinking block and comes via signature_delta events
+        // For Gemini: signature is on tool_use block (no signature_delta events)
+        const hasSignature = content.hasSignature || events.signatureDeltas > 0;
+        const passed = content.hasThinking && hasSignature && content.hasToolUse;
+        results.push({ name: 'Turn 1: Thinking + Signature + Tool Use', passed });
         if (!passed) allPassed = false;
 
         if (content.hasToolUse) {
@@ -101,11 +108,11 @@ drwxr-xr-x   4 user  staff   128 Dec 19 10:00 tests`
         });
 
         const turn2 = await streamRequest({
-            model: 'claude-sonnet-4-5-thinking',
-            max_tokens: 16000,
+            model,
+            max_tokens: modelConfig.max_tokens,
             stream: true,
             tools,
-            thinking: { type: 'enabled', budget_tokens: 10000 },
+            thinking: modelConfig.thinking,
             messages
         });
 
@@ -119,7 +126,7 @@ drwxr-xr-x   4 user  staff   128 Dec 19 10:00 tests`
 
             console.log('  Content:');
             console.log(`    Thinking: ${content.hasThinking ? 'YES' : 'NO'} (${content.thinking.length} blocks)`);
-            console.log(`    Signature: ${content.thinkingHasSignature ? 'YES' : 'NO'}`);
+            console.log(`    Signature: ${content.hasSignature ? 'YES' : 'NO'}`);
             console.log(`    Text: ${content.hasText ? 'YES' : 'NO'}`);
 
             console.log('  Events:');
@@ -139,7 +146,7 @@ drwxr-xr-x   4 user  staff   128 Dec 19 10:00 tests`
 
     // ===== Summary =====
     console.log('\n' + '='.repeat(60));
-    console.log('SUMMARY');
+    console.log(`SUMMARY [${family.toUpperCase()}]`);
     console.log('='.repeat(60));
 
     for (const result of results) {
@@ -148,7 +155,26 @@ drwxr-xr-x   4 user  staff   128 Dec 19 10:00 tests`
     }
 
     console.log('\n' + '='.repeat(60));
-    console.log(`OVERALL: ${allPassed ? 'ALL TESTS PASSED' : 'SOME TESTS FAILED'}`);
+    console.log(`[${family.toUpperCase()}] ${allPassed ? 'ALL TESTS PASSED' : 'SOME TESTS FAILED'}`);
+    console.log('='.repeat(60));
+
+    return allPassed;
+}
+
+async function runTests() {
+    const models = getTestModels();
+    let allPassed = true;
+
+    for (const { family, model } of models) {
+        console.log('\n');
+        const passed = await runTestsForModel(family, model);
+        if (!passed) allPassed = false;
+    }
+
+    console.log('\n' + '='.repeat(60));
+    console.log('FINAL RESULT');
+    console.log('='.repeat(60));
+    console.log(`Overall: ${allPassed ? 'ALL MODEL FAMILIES PASSED' : 'SOME MODEL FAMILIES FAILED'}`);
     console.log('='.repeat(60));
 
     process.exit(allPassed ? 0 : 1);

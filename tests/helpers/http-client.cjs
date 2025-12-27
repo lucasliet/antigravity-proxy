@@ -147,6 +147,12 @@ function analyzeContent(content) {
     const toolUse = content.filter(b => b.type === 'tool_use');
     const text = content.filter(b => b.type === 'text');
 
+    // Check for signatures in thinking blocks (Claude style)
+    const thinkingHasSignature = thinking.some(t => t.signature && t.signature.length >= 50);
+
+    // Check for signatures in tool_use blocks (Gemini 3+ style)
+    const toolUseHasSignature = toolUse.some(t => t.thoughtSignature && t.thoughtSignature.length >= 50);
+
     return {
         thinking,
         toolUse,
@@ -154,7 +160,10 @@ function analyzeContent(content) {
         hasThinking: thinking.length > 0,
         hasToolUse: toolUse.length > 0,
         hasText: text.length > 0,
-        thinkingHasSignature: thinking.some(t => t.signature && t.signature.length >= 50)
+        thinkingHasSignature: thinkingHasSignature,
+        toolUseHasSignature: toolUseHasSignature,
+        // Combined check: signature exists somewhere (thinking or tool_use)
+        hasSignature: thinkingHasSignature || toolUseHasSignature
     };
 }
 

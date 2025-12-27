@@ -9,8 +9,19 @@
 
 import crypto from 'crypto';
 import {
-    MIN_SIGNATURE_LENGTH
+    MIN_SIGNATURE_LENGTH,
+    GEMINI_MAX_OUTPUT_TOKENS,
+    getModelFamily,
+    isThinkingModel
 } from './constants.js';
+
+/**
+ * Sentinel value to skip thought signature validation for Gemini models.
+ * Per Google documentation, this value can be used when Claude Code strips
+ * the thoughtSignature field from tool_use blocks in multi-turn requests.
+ * See: https://ai.google.dev/gemini-api/docs/thought-signatures
+ */
+const GEMINI_SKIP_SIGNATURE = 'skip_thought_signature_validator';
 
 /**
  * Check if a part is a thinking block
@@ -272,7 +283,7 @@ export function reorderAssistantContent(content) {
 /**
  * Convert Anthropic message content to Google Generative AI parts
  */
-function convertContentToParts(content, isClaudeModel = false) {
+function convertContentToParts(content, isClaudeModel = false, isGeminiModel = false) {
     if (typeof content === 'string') {
         return [{ text: content }];
     }
@@ -337,7 +348,19 @@ function convertContentToParts(content, isClaudeModel = false) {
                 functionCall.id = block.id;
             }
 
-            parts.push({ functionCall });
+            // Build the part with functionCall
+            const part = { functionCall };
+
+            // For Gemini models, include thoughtSignature at the part level
+            // This is required by Gemini 3+ for tool calls to work correctly
+            if (isGeminiModel) {
+                // Use thoughtSignature from the block if Claude Code preserved it
+                // Otherwise, use the sentinel value to skip validation (Claude Code strips non-standard fields)
+                // See: https://ai.google.dev/gemini-api/docs/thought-signatures
+                part.thoughtSignature = block.thoughtSignature || GEMINI_SKIP_SIGNATURE;
+            }
+
+            parts.push(part);
         } else if (block.type === 'tool_result') {
             // Convert tool_result to functionResponse (Google format)
             let responseContent = block.content;
@@ -400,8 +423,10 @@ function convertRole(role) {
 export function convertAnthropicToGoogle(anthropicRequest) {
     const { messages, system, max_tokens, temperature, top_p, top_k, stop_sequences, tools, tool_choice, thinking } = anthropicRequest;
     const modelName = anthropicRequest.model || '';
-    const isClaudeModel = modelName.toLowerCase().includes('claude');
-    const isClaudeThinkingModel = isClaudeModel && modelName.toLowerCase().includes('thinking');
+    const modelFamily = getModelFamily(modelName);
+    const isClaudeModel = modelFamily === 'claude';
+    const isGeminiModel = modelFamily === 'gemini';
+    const isThinking = isThinkingModel(modelName);
 
     const googleRequest = {
         contents: [],
@@ -429,7 +454,7 @@ export function convertAnthropicToGoogle(anthropicRequest) {
     }
 
     // Add interleaved thinking hint for Claude thinking models with tools
-    if (isClaudeThinkingModel && tools && tools.length > 0) {
+    if (isClaudeModel && isThinking && tools && tools.length > 0) {
         const hint = 'Interleaved thinking is enabled. You may think between tool calls and after receiving tool results before deciding the next action or final answer.';
         if (!googleRequest.systemInstruction) {
             googleRequest.systemInstruction = { parts: [{ text: hint }] };
@@ -458,7 +483,7 @@ export function convertAnthropicToGoogle(anthropicRequest) {
             msgContent = reorderAssistantContent(msgContent);
         }
 
-        const parts = convertContentToParts(msgContent, isClaudeModel);
+        const parts = convertContentToParts(msgContent, isClaudeModel, isGeminiModel);
         const content = {
             role: convertRole(msg.role),
             parts: parts
@@ -488,22 +513,34 @@ export function convertAnthropicToGoogle(anthropicRequest) {
         googleRequest.generationConfig.stopSequences = stop_sequences;
     }
 
-    // Enable thinking for Claude thinking models
-    if (isClaudeThinkingModel) {
-        const thinkingConfig = {
-            include_thoughts: true
-        };
+    // Enable thinking for thinking models (Claude and Gemini 3+)
+    if (isThinking) {
+        if (isClaudeModel) {
+            // Claude thinking config
+            const thinkingConfig = {
+                include_thoughts: true
+            };
 
-        // Only set thinking_budget if explicitly provided
-        const thinkingBudget = thinking?.budget_tokens;
-        if (thinkingBudget) {
-            thinkingConfig.thinking_budget = thinkingBudget;
-            console.log('[FormatConverter] Thinking enabled with budget:', thinkingBudget);
-        } else {
-            console.log('[FormatConverter] Thinking enabled (no budget specified)');
+            // Only set thinking_budget if explicitly provided
+            const thinkingBudget = thinking?.budget_tokens;
+            if (thinkingBudget) {
+                thinkingConfig.thinking_budget = thinkingBudget;
+                console.log('[FormatConverter] Claude thinking enabled with budget:', thinkingBudget);
+            } else {
+                console.log('[FormatConverter] Claude thinking enabled (no budget specified)');
+            }
+
+            googleRequest.generationConfig.thinkingConfig = thinkingConfig;
+        } else if (isGeminiModel) {
+            // Gemini thinking config (uses camelCase)
+            const thinkingConfig = {
+                includeThoughts: true,
+                thinkingBudget: thinking?.budget_tokens || 16000
+            };
+            console.log('[FormatConverter] Gemini thinking enabled with budget:', thinkingConfig.thinkingBudget);
+
+            googleRequest.generationConfig.thinkingConfig = thinkingConfig;
         }
-
-        googleRequest.generationConfig.thinkingConfig = thinkingConfig;
     }
 
     // Convert tools to Google format
@@ -523,15 +560,29 @@ export function convertAnthropicToGoogle(anthropicRequest) {
                 || tool.parameters
                 || { type: 'object' };
 
+            // Sanitize schema for general compatibility
+            let parameters = sanitizeSchema(schema);
+
+            // For Gemini models, apply additional cleaning for VALIDATED mode
+            if (isGeminiModel) {
+                parameters = cleanSchemaForGemini(parameters);
+            }
+
             return {
                 name: String(name).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64),
                 description: description,
-                parameters: sanitizeSchema(schema)
+                parameters
             };
         });
 
         googleRequest.tools = [{ functionDeclarations }];
         console.log('[FormatConverter] Tools:', JSON.stringify(googleRequest.tools).substring(0, 300));
+    }
+
+    // Cap max tokens for Gemini models
+    if (isGeminiModel && googleRequest.generationConfig.maxOutputTokens > GEMINI_MAX_OUTPUT_TOKENS) {
+        console.log(`[FormatConverter] Capping Gemini max_tokens from ${googleRequest.generationConfig.maxOutputTokens} to ${GEMINI_MAX_OUTPUT_TOKENS}`);
+        googleRequest.generationConfig.maxOutputTokens = GEMINI_MAX_OUTPUT_TOKENS;
     }
 
     return googleRequest;
@@ -621,6 +672,63 @@ function sanitizeSchema(schema) {
 }
 
 /**
+ * Cleans JSON schema for Gemini API compatibility.
+ * Removes unsupported fields that cause VALIDATED mode errors.
+ *
+ * Gemini's VALIDATED mode rejects schemas with certain JSON Schema keywords
+ * that are not supported by the Gemini API.
+ *
+ * @param {Object} schema - The JSON schema to clean
+ * @returns {Object} Cleaned schema safe for Gemini API
+ */
+function cleanSchemaForGemini(schema) {
+    if (!schema || typeof schema !== 'object') return schema;
+    if (Array.isArray(schema)) return schema.map(cleanSchemaForGemini);
+
+    const result = { ...schema };
+
+    // Remove unsupported keywords that cause VALIDATED mode errors
+    const unsupported = [
+        'additionalProperties', 'default', '$schema', '$defs',
+        'definitions', '$ref', '$id', '$comment', 'title',
+        'minLength', 'maxLength', 'pattern', 'format',
+        'minItems', 'maxItems', 'examples'
+    ];
+
+    for (const key of unsupported) {
+        delete result[key];
+    }
+
+    // Check for unsupported 'format' in string types
+    if (result.type === 'string' && result.format) {
+        const allowed = ['enum', 'date-time'];
+        if (!allowed.includes(result.format)) {
+            delete result.format;
+        }
+    }
+
+    // Recursively clean nested schemas
+    for (const [key, value] of Object.entries(result)) {
+        if (typeof value === 'object' && value !== null) {
+            result[key] = cleanSchemaForGemini(value);
+        }
+    }
+
+    // Validate that required array only contains properties that exist
+    // Gemini's VALIDATED mode requires this
+    if (result.required && Array.isArray(result.required) && result.properties) {
+        const definedProps = new Set(Object.keys(result.properties));
+        result.required = result.required.filter(prop => definedProps.has(prop));
+        // If required is now empty, remove it
+        if (result.required.length === 0) {
+            delete result.required;
+        }
+    }
+
+    return result;
+}
+
+/**
  * Convert Google Generative AI response to Anthropic Messages API format
  *
  * @param {Object} googleResponse - Google format response (the inner response object)
@@ -661,12 +769,20 @@ export function convertGoogleToAnthropic(googleResponse, model) {
         } else if (part.functionCall) {
             // Convert functionCall to tool_use
             // Use the id from the response if available, otherwise generate one
-            anthropicContent.push({
+            const toolId = part.functionCall.id || `toolu_${crypto.randomBytes(12).toString('hex')}`;
+            const toolUseBlock = {
                 type: 'tool_use',
-                id: part.functionCall.id || `toolu_${crypto.randomBytes(12).toString('hex')}`,
+                id: toolId,
                 name: part.functionCall.name,
                 input: part.functionCall.args || {}
-            });
+            };
+
+            // For Gemini 3+, include thoughtSignature from the part level
+            if (part.thoughtSignature && part.thoughtSignature.length >= MIN_SIGNATURE_LENGTH) {
+                toolUseBlock.thoughtSignature = part.thoughtSignature;
+            }
+
+            anthropicContent.push(toolUseBlock);
             hasToolCalls = true;
         }
     }

@@ -8,32 +8,38 @@
  *
  * This simulates complex Claude Code scenarios where the model
  * thinks multiple times during a single turn.
+ *
+ * NOTE: This test is Claude-only. Interleaved thinking requires
+ * the anthropic-beta header which is specific to Claude thinking models.
  */
 const { streamRequest, commonTools } = require('./helpers/http-client.cjs');
+const { getThinkingModels, getModelConfig } = require('./helpers/test-models.cjs');
 
 // Multiple tools to encourage interleaved thinking
 const tools = [commonTools.readFile, commonTools.writeFile, commonTools.runTests];
 
-async function runTests() {
+async function runTestsForModel(family, model) {
     console.log('='.repeat(60));
-    console.log('INTERLEAVED THINKING TEST');
+    console.log(`INTERLEAVED THINKING TEST [${family.toUpperCase()}]`);
+    console.log(`Model: ${model}`);
     console.log('Tests complex multi-step reasoning with tools');
     console.log('='.repeat(60));
     console.log('');
 
     let allPassed = true;
     const results = [];
+    const modelConfig = getModelConfig(family);
 
     // ===== TEST 1: Complex task requiring multiple steps =====
     console.log('TEST 1: Complex task - read, modify, write, test');
     console.log('-'.repeat(40));
 
     const result = await streamRequest({
-        model: 'claude-opus-4-5-thinking',
-        max_tokens: 32000,
+        model,
+        max_tokens: modelConfig.max_tokens,
         stream: true,
         tools,
-        thinking: { type: 'enabled', budget_tokens: 16000 },
+        thinking: modelConfig.thinking,
         messages: [{
             role: 'user',
             content: `I need you to:
@@ -92,11 +98,11 @@ Please do this step by step, reading each file before modifying.`
         const toolUseBlock = result.content.find(b => b.type === 'tool_use');
 
         const result2 = await streamRequest({
-            model: 'claude-opus-4-5-thinking',
-            max_tokens: 32000,
+            model,
+            max_tokens: modelConfig.max_tokens,
             stream: true,
             tools,
-            thinking: { type: 'enabled', budget_tokens: 16000 },
+            thinking: modelConfig.thinking,
             messages: [
                 {
                     role: 'user',
@@ -147,7 +153,7 @@ Please do this step by step, reading each file before modifying.`
 
     // ===== Summary =====
     console.log('\n' + '='.repeat(60));
-    console.log('SUMMARY');
+    console.log(`SUMMARY [${family.toUpperCase()}]`);
     console.log('='.repeat(60));
 
     for (const result of results) {
@@ -156,7 +162,27 @@ Please do this step by step, reading each file before modifying.`
     }
 
     console.log('\n' + '='.repeat(60));
-    console.log(`OVERALL: ${allPassed ? 'ALL TESTS PASSED' : 'SOME TESTS FAILED'}`);
+    console.log(`[${family.toUpperCase()}] ${allPassed ? 'ALL TESTS PASSED' : 'SOME TESTS FAILED'}`);
+    console.log('='.repeat(60));
+
+    return allPassed;
+}
+
+async function runTests() {
+    // Interleaved thinking is Claude-only (requires anthropic-beta header)
+    const models = getThinkingModels(['gemini']);
+    let allPassed = true;
+
+    for (const { family, model } of models) {
+        console.log('\n');
+        const passed = await runTestsForModel(family, model);
+        if (!passed) allPassed = false;
+    }
+
+    console.log('\n' + '='.repeat(60));
+    console.log('FINAL RESULT');
+    console.log('='.repeat(60));
+    console.log(`Overall: ${allPassed ? 'ALL TESTS PASSED' : 'SOME TESTS FAILED'}`);
     console.log('='.repeat(60));
 
     process.exit(allPassed ? 0 : 1);

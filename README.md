@@ -6,7 +6,7 @@
 
 <a href="https://buymeacoffee.com/badrinarayanans" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50"></a>
 
-A proxy server that exposes an **Anthropic-compatible API** backed by **Antigravity's Cloud Code**, letting you use Claude models like sonnet and opus with **Claude Code CLI**.
+A proxy server that exposes an **Anthropic-compatible API** backed by **Antigravity's Cloud Code**, letting you use Claude and Gemini models with **Claude Code CLI**.
 
 ![Antigravity Claude Proxy Banner](images/banner.png)
 
@@ -145,7 +145,23 @@ Add this configuration:
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-5-thinking",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-5-thinking",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-sonnet-4-5",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-4-5-thinking"
+    "CLAUDE_CODE_SUBAGENT_MODEL": "claude-sonnet-4-5"
+  }
+}
+```
+
+Or to use Gemini models:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "test",
+    "ANTHROPIC_BASE_URL": "http://localhost:8080",
+    "ANTHROPIC_MODEL": "gemini-3-pro-high",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "gemini-3-pro-high",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "gemini-3-flash",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gemini-3-flash",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "gemini-2.5-flash-lite"
   }
 }
 ```
@@ -164,6 +180,8 @@ claude
 
 ## Available Models
 
+### Claude Models
+
 | Model ID | Description |
 |----------|-------------|
 | `claude-sonnet-4-5-thinking` | Claude Sonnet 4.5 with extended thinking |
@@ -173,6 +191,16 @@ claude
 Standard Anthropic model names are automatically mapped:
 - `claude-sonnet-4-5-20250514` → `claude-sonnet-4-5-thinking`
 - `claude-opus-4-5-20250514` → `claude-opus-4-5-thinking`
+
+### Gemini Models
+
+| Model ID | Description |
+|----------|-------------|
+| `gemini-3-flash` | Gemini 3 Flash with thinking |
+| `gemini-3-pro-low` | Gemini 3 Pro Low with thinking |
+| `gemini-3-pro-high` | Gemini 3 Pro High with thinking |
+
+Gemini models include full thinking support with `thoughtSignature` handling for multi-turn conversations.
 
 ---
 

@@ -6,20 +6,28 @@
  *
  * Claude Code sends assistant messages with thinking blocks that include signatures.
  * These signatures must be preserved and sent back to the API.
+ *
+ * Note: Claude puts signatures on thinking blocks, Gemini 3+ puts them on tool_use blocks.
+ *
+ * Runs for both Claude and Gemini model families.
  */
-const { streamRequest, commonTools } = require('./helpers/http-client.cjs');
+const { streamRequest, analyzeContent, commonTools } = require('./helpers/http-client.cjs');
+const { getThinkingModels, getModelConfig, familySupportsThinking } = require('./helpers/test-models.cjs');
 
 const tools = [commonTools.getWeather];
 
-async function runTests() {
+async function runTestsForModel(family, model) {
     console.log('='.repeat(60));
-    console.log('THINKING SIGNATURE TEST');
+    console.log(`THINKING SIGNATURE TEST [${family.toUpperCase()}]`);
+    console.log(`Model: ${model}`);
     console.log('Simulates Claude Code multi-turn with thinking blocks');
     console.log('='.repeat(60));
     console.log('');
 
     let allPassed = true;
     const results = [];
+    const modelConfig = getModelConfig(family);
+    const expectThinking = familySupportsThinking(family);
 
     // ===== TEST 1: First turn - get thinking block with signature =====
     console.log('TEST 1: Initial request with thinking model');
@@ -30,35 +38,34 @@ async function runTests() {
     ];
 
     const turn1Result = await streamRequest({
-        model: 'claude-sonnet-4-5-thinking',
-        max_tokens: 16000,
+        model,
+        max_tokens: modelConfig.max_tokens,
         stream: true,
         tools,
-        thinking: { type: 'enabled', budget_tokens: 10000 },
+        thinking: modelConfig.thinking,
         messages: turn1Messages
     });
 
-    const turn1Thinking = turn1Result.content.filter(b => b.type === 'thinking');
-    const turn1ToolUse = turn1Result.content.filter(b => b.type === 'tool_use');
-    const turn1Text = turn1Result.content.filter(b => b.type === 'text');
+    const content = analyzeContent(turn1Result.content);
 
-    console.log(`  Thinking blocks: ${turn1Thinking.length}`);
-    console.log(`  Tool use blocks: ${turn1ToolUse.length}`);
-    console.log(`  Text blocks: ${turn1Text.length}`);
+    console.log(`  Thinking blocks: ${content.thinking.length}`);
+    console.log(`  Tool use blocks: ${content.toolUse.length}`);
+    console.log(`  Text blocks: ${content.text.length}`);
 
-    // Check thinking has signature
-    let turn1HasSignature = false;
-    if (turn1Thinking.length > 0) {
-        const sig = turn1Thinking[0].signature || '';
-        turn1HasSignature = sig.length >= 50;
-        console.log(`  Signature length: ${sig.length} chars`);
-        console.log(`  Signature present: ${turn1HasSignature ? 'YES' : 'NO'}`);
-        if (turn1Thinking[0].thinking) {
-            console.log(`  Thinking preview: "${turn1Thinking[0].thinking.substring(0, 80)}..."`);
-        }
+    // Check signatures - Claude puts them on thinking blocks, Gemini on tool_use blocks
+    console.log(`  Thinking signature: ${content.thinkingHasSignature ? 'YES' : 'NO'}`);
+    console.log(`  Tool use signature: ${content.toolUseHasSignature ? 'YES' : 'NO'}`);
+    console.log(`  Has signature (combined): ${content.hasSignature ? 'YES' : 'NO'}`);
+
+    if (content.hasThinking && content.thinking[0].thinking) {
+        console.log(`  Thinking preview: "${content.thinking[0].thinking.substring(0, 80)}..."`);
     }
 
-    const test1Pass = turn1Thinking.length > 0 && turn1HasSignature && turn1ToolUse.length > 0;
+    // For models that support thinking, expect thinking + signature (somewhere) + tool use
+    // For models that don't, just expect tool use
+    const test1Pass = expectThinking
+        ? (content.hasThinking && content.hasSignature && content.hasToolUse)
+        : (content.hasToolUse || content.hasText);
     results.push({ name: 'Turn 1: Thinking + Signature + Tool Use', passed: test1Pass });
     console.log(`  Result: ${test1Pass ? 'PASS' : 'FAIL'}`);
     if (!test1Pass) allPassed = false;
@@ -67,17 +74,21 @@ async function runTests() {
     console.log('\nTEST 2: Multi-turn with thinking signature in assistant message');
     console.log('-'.repeat(40));
 
-    if (!turn1ToolUse.length) {
+    if (!content.hasToolUse) {
         console.log('  SKIPPED - No tool use in turn 1');
         results.push({ name: 'Turn 2: Multi-turn with signature', passed: false, skipped: true });
     } else {
         // Build assistant message with thinking (including signature) - this is how Claude Code sends it
         const assistantContent = turn1Result.content;
 
-        // Verify the thinking block has signature before sending
+        // Log what we're sending back
         const thinkingInAssistant = assistantContent.find(b => b.type === 'thinking');
+        const toolUseInAssistant = assistantContent.find(b => b.type === 'tool_use');
         if (thinkingInAssistant) {
             console.log(`  Sending thinking with signature: ${(thinkingInAssistant.signature || '').length} chars`);
+        }
+        if (toolUseInAssistant && toolUseInAssistant.thoughtSignature) {
+            console.log(`  Sending tool_use with thoughtSignature: ${toolUseInAssistant.thoughtSignature.length} chars`);
         }
 
         const turn2Messages = [
@@ -87,26 +98,25 @@ async function runTests() {
                 role: 'user',
                 content: [{
                     type: 'tool_result',
-                    tool_use_id: turn1ToolUse[0].id,
+                    tool_use_id: content.toolUse[0].id,
                     content: 'The weather in Paris is 18°C and sunny.'
                 }]
             }
         ];
 
         const turn2Result = await streamRequest({
-            model: 'claude-sonnet-4-5-thinking',
-            max_tokens: 16000,
+            model,
+            max_tokens: modelConfig.max_tokens,
             stream: true,
             tools,
-            thinking: { type: 'enabled', budget_tokens: 10000 },
+            thinking: modelConfig.thinking,
             messages: turn2Messages
         });
 
-        const turn2Thinking = turn2Result.content.filter(b => b.type === 'thinking');
-        const turn2Text = turn2Result.content.filter(b => b.type === 'text');
+        const turn2Content = analyzeContent(turn2Result.content);
 
-        console.log(`  Thinking blocks: ${turn2Thinking.length}`);
-        console.log(`  Text blocks: ${turn2Text.length}`);
+        console.log(`  Thinking blocks: ${turn2Content.thinking.length}`);
+        console.log(`  Text blocks: ${turn2Content.text.length}`);
 
         // Check for errors
         const hasError = turn2Result.events.some(e => e.type === 'error');
@@ -115,26 +125,22 @@ async function runTests() {
             console.log(`  ERROR: ${errorEvent?.data?.error?.message || 'Unknown error'}`);
         }
 
-        if (turn2Thinking.length > 0) {
-            const sig = turn2Thinking[0].signature || '';
-            console.log(`  New signature length: ${sig.length} chars`);
-            if (turn2Thinking[0].thinking) {
-                console.log(`  Thinking preview: "${turn2Thinking[0].thinking.substring(0, 80)}..."`);
-            }
+        if (turn2Content.hasThinking && turn2Content.thinking[0].thinking) {
+            console.log(`  Thinking preview: "${turn2Content.thinking[0].thinking.substring(0, 80)}..."`);
         }
 
-        if (turn2Text.length > 0 && turn2Text[0].text) {
-            console.log(`  Response: "${turn2Text[0].text.substring(0, 100)}..."`);
+        if (turn2Content.hasText && turn2Content.text[0].text) {
+            console.log(`  Response: "${turn2Content.text[0].text.substring(0, 100)}..."`);
         }
 
-        const test2Pass = !hasError && (turn2Thinking.length > 0 || turn2Text.length > 0);
+        const test2Pass = !hasError && (turn2Content.hasThinking || turn2Content.hasText);
         results.push({ name: 'Turn 2: Multi-turn with signature', passed: test2Pass });
         console.log(`  Result: ${test2Pass ? 'PASS' : 'FAIL'}`);
         if (!test2Pass) allPassed = false;
     }
 
     // ===== TEST 3: Verify signature_delta events in stream =====
-    console.log('\nTEST 3: Verify signature_delta events in stream');
+    console.log('\nTEST 3: Verify signature events in stream');
     console.log('-'.repeat(40));
 
     const signatureDeltas = turn1Result.events.filter(
@@ -147,14 +153,18 @@ async function runTests() {
         console.log(`  Total signature length from deltas: ${totalSigLength} chars`);
     }
 
-    const test3Pass = signatureDeltas.length > 0;
-    results.push({ name: 'signature_delta events present', passed: test3Pass });
+    // For Claude: signature_delta events should be present
+    // For Gemini: signature is attached to tool_use block directly, may not have signature_delta events
+    const test3Pass = expectThinking
+        ? (signatureDeltas.length > 0 || content.toolUseHasSignature)
+        : true;
+    results.push({ name: 'Signature present (delta or on tool_use)', passed: test3Pass });
     console.log(`  Result: ${test3Pass ? 'PASS' : 'FAIL'}`);
     if (!test3Pass) allPassed = false;
 
     // ===== Summary =====
     console.log('\n' + '='.repeat(60));
-    console.log('SUMMARY');
+    console.log(`SUMMARY [${family.toUpperCase()}]`);
     console.log('='.repeat(60));
 
     for (const result of results) {
@@ -163,7 +173,26 @@ async function runTests() {
     }
 
     console.log('\n' + '='.repeat(60));
-    console.log(`OVERALL: ${allPassed ? 'ALL TESTS PASSED' : 'SOME TESTS FAILED'}`);
+    console.log(`[${family.toUpperCase()}] ${allPassed ? 'ALL TESTS PASSED' : 'SOME TESTS FAILED'}`);
+    console.log('='.repeat(60));
+
+    return allPassed;
+}
+
+async function runTests() {
+    const models = getThinkingModels();
+    let allPassed = true;
+
+    for (const { family, model } of models) {
+        console.log('\n');
+        const passed = await runTestsForModel(family, model);
+        if (!passed) allPassed = false;
+    }
+
+    console.log('\n' + '='.repeat(60));
+    console.log('FINAL RESULT');
+    console.log('='.repeat(60));
+    console.log(`Overall: ${allPassed ? 'ALL MODEL FAMILIES PASSED' : 'SOME MODEL FAMILIES FAILED'}`);
     console.log('='.repeat(60));
 
     process.exit(allPassed ? 0 : 1);

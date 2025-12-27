@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Antigravity Claude Proxy is a Node.js proxy server that exposes an Anthropic-compatible API backed by Antigravity's Cloud Code service. It enables using Claude models (`claude-sonnet-4-5-thinking`, `claude-opus-4-5-thinking`) with Claude Code CLI.
+Antigravity Claude Proxy is a Node.js proxy server that exposes an Anthropic-compatible API backed by Antigravity's Cloud Code service. It enables using Claude models (`claude-sonnet-4-5-thinking`, `claude-opus-4-5-thinking`) and Gemini models (`gemini-3-flash`, `gemini-3-pro-low`, `gemini-3-pro-high`) with Claude Code CLI.
 
 The proxy translates requests from Anthropic Messages API format → Google Generative AI format → Antigravity Cloud Code API, then converts responses back to Anthropic format with full thinking/streaming support.
 
@@ -80,10 +80,16 @@ Claude Code CLI → Express Server (server.js) → CloudCode Client → Antigrav
 
 **Constants:** All configuration values are centralized in `src/constants.js`:
 - API endpoints and headers
-- Model mappings
+- Model mappings and model family detection (`getModelFamily()`, `isThinkingModel()`)
 - OAuth configuration
 - Rate limit thresholds
 - Thinking model settings
+
+**Model Family Handling:**
+- `getModelFamily(model)` returns `'claude'` or `'gemini'` based on model name
+- Claude models use `signature` field on thinking blocks
+- Gemini models use `thoughtSignature` field on functionCall parts
+- When Claude Code strips `thoughtSignature`, the proxy uses Google's `skip_thought_signature_validator` sentinel value
 
 **Error Handling:** Use custom error classes from `src/errors.js`:
 - `RateLimitError` - 429/RESOURCE_EXHAUSTED errors

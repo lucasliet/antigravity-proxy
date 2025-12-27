@@ -11,14 +11,18 @@
  * - Thinking blocks with signatures are preserved across turns
  * - Tool use/result flow works correctly
  * - Interleaved thinking with tools
+ *
+ * Runs for both Claude and Gemini model families.
  */
 const { makeRequest, analyzeContent, commonTools } = require('./helpers/http-client.cjs');
+const { getTestModels, getModelConfig, familySupportsThinking } = require('./helpers/test-models.cjs');
 
 const tools = [commonTools.searchFiles, commonTools.readFile];
 
-async function runTests() {
+async function runTestsForModel(family, model) {
     console.log('='.repeat(60));
-    console.log('MULTI-TURN TOOL CALL TEST (NON-STREAMING)');
+    console.log(`MULTI-TURN TOOL CALL TEST [${family.toUpperCase()}]`);
+    console.log(`Model: ${model}`);
     console.log('Simulates Claude Code conversation pattern');
     console.log('='.repeat(60));
     console.log('');
@@ -26,6 +30,8 @@ async function runTests() {
     let messages = [];
     let allPassed = true;
     const results = [];
+    const modelConfig = getModelConfig(family);
+    const expectThinking = familySupportsThinking(family);
 
     // ===== TURN 1: Initial request =====
     console.log('TURN 1: User asks to find and read a config file');
@@ -37,11 +43,11 @@ async function runTests() {
     });
 
     const turn1 = await makeRequest({
-        model: 'claude-sonnet-4-5-thinking',
-        max_tokens: 16000,
+        model,
+        max_tokens: modelConfig.max_tokens,
         stream: false,
         tools,
-        thinking: { type: 'enabled', budget_tokens: 10000 },
+        thinking: modelConfig.thinking,
         messages
     });
 
@@ -52,7 +58,7 @@ async function runTests() {
     } else {
         const analysis = analyzeContent(turn1.content || []);
         console.log(`  Thinking: ${analysis.hasThinking ? 'YES' : 'NO'} (${analysis.thinking.length} blocks)`);
-        console.log(`  Signature: ${analysis.thinkingHasSignature ? 'YES' : 'NO'}`);
+        console.log(`  Signature: ${analysis.hasSignature ? 'YES' : 'NO'}`);
         console.log(`  Tool Use: ${analysis.hasToolUse ? 'YES' : 'NO'} (${analysis.toolUse.length} calls)`);
         console.log(`  Text: ${analysis.hasText ? 'YES' : 'NO'}`);
 
@@ -63,7 +69,11 @@ async function runTests() {
             console.log(`  Tool: ${analysis.toolUse[0].name}(${JSON.stringify(analysis.toolUse[0].input)})`);
         }
 
-        const passed = analysis.hasThinking && analysis.thinkingHasSignature && analysis.hasToolUse;
+        // For thinking models, expect thinking + signature + tool use
+        // For non-thinking models, just expect tool use
+        const passed = expectThinking
+            ? (analysis.hasThinking && analysis.hasSignature && analysis.hasToolUse)
+            : analysis.hasToolUse;
         results.push({ name: 'Turn 1: Thinking + Signature + Tool Use', passed });
         if (!passed) allPassed = false;
 
@@ -91,11 +101,11 @@ async function runTests() {
         });
 
         const turn2 = await makeRequest({
-            model: 'claude-sonnet-4-5-thinking',
-            max_tokens: 16000,
+            model,
+            max_tokens: modelConfig.max_tokens,
             stream: false,
             tools,
-            thinking: { type: 'enabled', budget_tokens: 10000 },
+            thinking: modelConfig.thinking,
             messages
         });
 
@@ -106,7 +116,7 @@ async function runTests() {
         } else {
             const analysis = analyzeContent(turn2.content || []);
             console.log(`  Thinking: ${analysis.hasThinking ? 'YES' : 'NO'} (${analysis.thinking.length} blocks)`);
-            console.log(`  Signature: ${analysis.thinkingHasSignature ? 'YES' : 'NO'}`);
+            console.log(`  Signature: ${analysis.hasSignature ? 'YES' : 'NO'}`);
             console.log(`  Tool Use: ${analysis.hasToolUse ? 'YES' : 'NO'} (${analysis.toolUse.length} calls)`);
             console.log(`  Text: ${analysis.hasText ? 'YES' : 'NO'}`);
 
@@ -118,7 +128,9 @@ async function runTests() {
             }
 
             // Either tool use (to read file) or text response is acceptable
-            const passed = analysis.hasThinking && (analysis.hasToolUse || analysis.hasText);
+            const passed = expectThinking
+                ? (analysis.hasThinking && (analysis.hasToolUse || analysis.hasText))
+                : (analysis.hasToolUse || analysis.hasText);
             results.push({ name: 'Turn 2: Thinking + (Tool or Text)', passed });
             if (!passed) allPassed = false;
 
@@ -155,11 +167,11 @@ async function runTests() {
             });
 
             const turn3 = await makeRequest({
-                model: 'claude-sonnet-4-5-thinking',
-                max_tokens: 16000,
+                model,
+                max_tokens: modelConfig.max_tokens,
                 stream: false,
                 tools,
-                thinking: { type: 'enabled', budget_tokens: 10000 },
+                thinking: modelConfig.thinking,
                 messages
             });
 
@@ -168,19 +180,23 @@ async function runTests() {
                 allPassed = false;
                 results.push({ name: 'Turn 3: Final response', passed: false });
             } else {
-                const analysis = analyzeContent(turn3.content || []);
+                            const analysis = analyzeContent(turn3.content || []);
                 console.log(`  Thinking: ${analysis.hasThinking ? 'YES' : 'NO'} (${analysis.thinking.length} blocks)`);
-                console.log(`  Signature: ${analysis.thinkingHasSignature ? 'YES' : 'NO'}`);
+                console.log(`  Signature: ${analysis.hasSignature ? 'YES' : 'NO'}`);
+                console.log(`  Tool Use: ${analysis.hasToolUse ? 'YES' : 'NO'} (${analysis.toolUse.length} calls)`);
                 console.log(`  Text: ${analysis.hasText ? 'YES' : 'NO'}`);
 
                 if (analysis.hasText && analysis.text[0].text) {
                     console.log(`  Response: "${analysis.text[0].text.substring(0, 100)}..."`);
                 }
+                if (analysis.hasToolUse) {
+                    console.log(`  Tool: ${analysis.toolUse[0].name}(${JSON.stringify(analysis.toolUse[0].input)})`);
+                }
 
-                // Thinking is optional for final responses - model may skip it for simple tasks
-                const passed = analysis.hasText;
-                const thinkingNote = analysis.hasThinking ? ' (with thinking)' : ' (no thinking - normal for simple tasks)';
-                results.push({ name: 'Turn 3: Text response' + thinkingNote, passed });
+                // For final turn: expect text OR another tool call (model may need more info)
+                const passed = analysis.hasText || analysis.hasToolUse;
+                const responseType = analysis.hasText ? 'text' : (analysis.hasToolUse ? 'tool_use' : 'none');
+                results.push({ name: `Turn 3: Response (${responseType})`, passed });
                 if (!passed) allPassed = false;
             }
         }
@@ -188,7 +204,7 @@ async function runTests() {
 
     // ===== Summary =====
     console.log('\n' + '='.repeat(60));
-    console.log('SUMMARY');
+    console.log(`SUMMARY [${family.toUpperCase()}]`);
     console.log('='.repeat(60));
 
     for (const result of results) {
@@ -197,7 +213,26 @@ async function runTests() {
     }
 
     console.log('\n' + '='.repeat(60));
-    console.log(`OVERALL: ${allPassed ? 'ALL TESTS PASSED' : 'SOME TESTS FAILED'}`);
+    console.log(`[${family.toUpperCase()}] ${allPassed ? 'ALL TESTS PASSED' : 'SOME TESTS FAILED'}`);
+    console.log('='.repeat(60));
+
+    return allPassed;
+}
+
+async function runTests() {
+    const models = getTestModels();
+    let allPassed = true;
+
+    for (const { family, model } of models) {
+        console.log('\n');
+        const passed = await runTestsForModel(family, model);
+        if (!passed) allPassed = false;
+    }
+
+    console.log('\n' + '='.repeat(60));
+    console.log('FINAL RESULT');
+    console.log('='.repeat(60));
+    console.log(`Overall: ${allPassed ? 'ALL MODEL FAMILIES PASSED' : 'SOME MODEL FAMILIES FAILED'}`);
     console.log('='.repeat(60));
 
     process.exit(allPassed ? 0 : 1);

@@ -5,23 +5,28 @@
  * - Session ID is stable across turns (derived from first user message)
  * - cache_read_input_tokens is returned in usage metadata
  * - Second turn in same conversation should hit cache
+ *
+ * Runs for both Claude and Gemini model families.
  */
 const { streamRequest, analyzeContent, extractUsage } = require('./helpers/http-client.cjs');
+const { getTestModels, getModelConfig } = require('./helpers/test-models.cjs');
 
 // Large system prompt to exceed 1024 token minimum for caching
 // This matches the format used in the working direct API test (~36KB)
 const LARGE_SYSTEM_PROMPT = 'You are an expert software engineer. Here is important context:\n' +
     '// Large codebase file content line\n'.repeat(1000);
 
-async function runTests() {
+async function runTestsForModel(family, model) {
     console.log('='.repeat(60));
-    console.log('PROMPT CACHING TEST (STREAMING)');
+    console.log(`PROMPT CACHING TEST [${family.toUpperCase()}]`);
+    console.log(`Model: ${model}`);
     console.log('Verifies session ID stability and cache token reporting');
     console.log('='.repeat(60));
     console.log('');
 
     let allPassed = true;
     const results = [];
+    const modelConfig = getModelConfig(family);
 
     // ===== TURN 1: Initial request =====
     console.log('TURN 1: Initial request (establishes cache)');
@@ -35,11 +40,11 @@ async function runTests() {
     ];
 
     const turn1 = await streamRequest({
-        model: 'claude-sonnet-4-5-thinking',
-        max_tokens: 16000,
+        model,
+        max_tokens: modelConfig.max_tokens,
         stream: true,
         system: LARGE_SYSTEM_PROMPT,
-        thinking: { type: 'enabled', budget_tokens: 5000 },
+        thinking: modelConfig.thinking,
         messages: turn1Messages
     });
 
@@ -89,11 +94,11 @@ async function runTests() {
     ];
 
     const turn2 = await streamRequest({
-        model: 'claude-sonnet-4-5-thinking',
-        max_tokens: 16000,
+        model,
+        max_tokens: modelConfig.max_tokens,
         stream: true,
         system: LARGE_SYSTEM_PROMPT,
-        thinking: { type: 'enabled', budget_tokens: 5000 },
+        thinking: modelConfig.thinking,
         messages: turn2Messages
     });
 
@@ -143,7 +148,7 @@ async function runTests() {
 
     // ===== Summary =====
     console.log('\n' + '='.repeat(60));
-    console.log('SUMMARY');
+    console.log(`SUMMARY [${family.toUpperCase()}]`);
     console.log('='.repeat(60));
 
     for (const result of results) {
@@ -156,13 +161,32 @@ async function runTests() {
     }
 
     console.log('\n' + '='.repeat(60));
-    console.log(`OVERALL: ${allPassed ? 'ALL TESTS PASSED' : 'SOME TESTS FAILED'}`);
+    console.log(`[${family.toUpperCase()}] ${allPassed ? 'ALL TESTS PASSED' : 'SOME TESTS FAILED'}`);
     console.log('='.repeat(60));
 
     console.log('\nNote: Cache effectiveness depends on:');
     console.log('  1. Stable session ID (derived from first user message hash)');
     console.log('  2. Sticky account selection (same account across turns)');
     console.log('  3. API-side cache availability (may take time to populate)');
+
+    return allPassed;
+}
+
+async function runTests() {
+    const models = getTestModels();
+    let allPassed = true;
+
+    for (const { family, model } of models) {
+        console.log('\n');
+        const passed = await runTestsForModel(family, model);
+        if (!passed) allPassed = false;
+    }
+
+    console.log('\n' + '='.repeat(60));
+    console.log('FINAL RESULT');
+    console.log('='.repeat(60));
+    console.log(`Overall: ${allPassed ? 'ALL MODEL FAMILIES PASSED' : 'SOME MODEL FAMILIES FAILED'}`);
+    console.log('='.repeat(60));
 
     process.exit(allPassed ? 0 : 1);
 }

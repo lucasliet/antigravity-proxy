@@ -15,7 +15,9 @@ import {
     ANTIGRAVITY_HEADERS,
     MAX_RETRIES,
     MAX_WAIT_BEFORE_ERROR_MS,
-    MIN_SIGNATURE_LENGTH
+    MIN_SIGNATURE_LENGTH,
+    getModelFamily,
+    isThinkingModel
 } from './constants.js';
 import {
     convertAnthropicToGoogle,
@@ -244,9 +246,10 @@ function buildHeaders(token, model, accept = 'application/json') {
         ...ANTIGRAVITY_HEADERS
     };
 
-    // Add interleaved thinking header for Claude thinking models
-    const isThinkingModel = model.toLowerCase().includes('claude') && model.toLowerCase().includes('thinking');
-    if (isThinkingModel) {
+    const modelFamily = getModelFamily(model);
+
+    // Add interleaved thinking header only for Claude thinking models
+    if (modelFamily === 'claude' && isThinkingModel(model)) {
         headers['anthropic-beta'] = 'interleaved-thinking-2025-05-14';
     }
 
@@ -272,7 +275,7 @@ function buildHeaders(token, model, accept = 'application/json') {
  */
 export async function sendMessage(anthropicRequest, accountManager) {
     const model = anthropicRequest.model;
-    const isThinkingModel = model.toLowerCase().includes('claude') && model.toLowerCase().includes('thinking');
+    const isThinking = isThinkingModel(model);
 
     // Retry loop with account failover
     // Ensure we try at least as many times as there are accounts to cycle through everyone
@@ -330,13 +333,13 @@ export async function sendMessage(anthropicRequest, accountManager) {
             let lastError = null;
             for (const endpoint of ANTIGRAVITY_ENDPOINT_FALLBACKS) {
                 try {
-                    const url = isThinkingModel
+                    const url = isThinking
                         ? `${endpoint}/v1internal:streamGenerateContent?alt=sse`
                         : `${endpoint}/v1internal:generateContent`;
 
                     const response = await fetch(url, {
                         method: 'POST',
-                        headers: buildHeaders(token, model, isThinkingModel ? 'text/event-stream' : 'application/json'),
+                        headers: buildHeaders(token, model, isThinking ? 'text/event-stream' : 'application/json'),
                         body: JSON.stringify(payload)
                     });
 
@@ -370,7 +373,7 @@ export async function sendMessage(anthropicRequest, accountManager) {
                     }
 
                     // For thinking models, parse SSE and accumulate all parts
-                    if (isThinkingModel) {
+                    if (isThinking) {
                         return await parseThinkingSSEResponse(response, anthropicRequest.model);
                     }
 
@@ -812,6 +815,10 @@ async function* streamSSEResponse(response, originalModel) {
 
                     } else if (part.functionCall) {
                         // Handle tool use
+                        // For Gemini 3+, capture thoughtSignature from the functionCall part
+                        // The signature is a sibling to functionCall, not inside it
+                        const functionCallSignature = part.thoughtSignature || '';
+
                         if (currentBlockType === 'thinking' && currentThinkingSignature) {
                             yield {
                                 type: 'content_block_delta',
@@ -829,15 +836,24 @@ async function* streamSSEResponse(response, originalModel) {
 
                         const toolId = part.functionCall.id || `toolu_${crypto.randomBytes(12).toString('hex')}`;
 
+                        // For Gemini, include the thoughtSignature in the tool_use block
+                        // so it can be sent back in subsequent requests
+                        const toolUseBlock = {
+                            type: 'tool_use',
+                            id: toolId,
+                            name: part.functionCall.name,
+                            input: {}
+                        };
+
+                        // Store the signature in the tool_use block for later retrieval
+                        if (functionCallSignature && functionCallSignature.length >= MIN_SIGNATURE_LENGTH) {
+                            toolUseBlock.thoughtSignature = functionCallSignature;
+                        }
+
                         yield {
                             type: 'content_block_start',
                             index: blockIndex,
-                            content_block: {
-                                type: 'tool_use',
-                                id: toolId,
-                                name: part.functionCall.name,
-                                input: {}
-                            }
+                            content_block: toolUseBlock
                         };
 
                         yield {
