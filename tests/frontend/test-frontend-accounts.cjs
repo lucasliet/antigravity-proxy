@@ -66,7 +66,8 @@ const tests = [
         name: 'Accounts view has table with required columns',
         async run() {
             const res = await request('/views/accounts.html');
-            const columns = ['enabled', 'identity', 'projectId', 'health', 'operations'];
+            // Updated column names to match current HTML: enabled, accountEmail, source, tier, quota, health, operations
+            const columns = ['enabled', 'accountEmail', 'source', 'tier', 'health', 'operations'];
 
             const missing = columns.filter(col => !res.data.includes(col));
             if (missing.length > 0) {
@@ -102,7 +103,8 @@ const tests = [
         name: 'Accounts view has delete button',
         async run() {
             const res = await request('/views/accounts.html');
-            if (!res.data.includes('deleteAccount')) {
+            // Function is now confirmDeleteAccount (opens confirmation modal)
+            if (!res.data.includes('confirmDeleteAccount')) {
                 throw new Error('Delete account function not found');
             }
             return 'Delete button present';
@@ -129,9 +131,10 @@ const tests = [
         }
     },
     {
-        name: 'Accounts view has addAccountModal component',
+        name: 'Main page has addAccountModal component',
         async run() {
-            const res = await request('/views/accounts.html');
+            // The modal lives in index.html, not accounts.html
+            const res = await request('/index.html');
             if (!res.data.includes('addAccountModal')) {
                 throw new Error('addAccountModal component not found');
             }
@@ -139,9 +142,10 @@ const tests = [
         }
     },
     {
-        name: 'Accounts view has manual auth UI elements',
+        name: 'Main page has manual auth UI elements',
         async run() {
-            const res = await request('/views/accounts.html');
+            // Manual auth elements are in the modal in index.html
+            const res = await request('/index.html');
             const elements = ['initManualAuth', 'completeManualAuth', 'callbackInput'];
             const missing = elements.filter(el => !res.data.includes(el));
             if (missing.length > 0) {
