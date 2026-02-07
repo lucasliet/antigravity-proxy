@@ -64,7 +64,7 @@
         <div class="p-8 overflow-y-auto flex-1 custom-scrollbar">
 
             <!-- Tab 1: UI Preferences -->
-            <div x-show="activeTab === 'ui'" class="space-y-8 max-w-2xl animate-fade-in">
+            <div x-show="activeTab === 'ui'" class="space-y-8 animate-fade-in">
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <!-- Language -->
                     <div class="form-control">
@@ -182,7 +182,7 @@
             </div>
 
             <!-- Tab 2: Claude CLI Configuration -->
-            <div x-show="activeTab === 'claude'" x-data="claudeConfig" class="space-y-6 max-w-3xl animate-fade-in">
+            <div x-show="activeTab === 'claude'" x-data="claudeConfig" class="space-y-6 animate-fade-in">
                 <div class="alert bg-space-900/50 border-space-border text-sm shadow-none">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"
                         class="stroke-info shrink-0 w-6 h-6">
@@ -868,7 +868,7 @@
 
             <!-- Tab 3: Models Configuration -->
             <div x-show="activeTab === 'models'" x-data="window.Components.models()"
-                class="space-y-6 max-w-3xl animate-fade-in">
+                class="space-y-6 animate-fade-in">
 
                 <div class="flex items-center justify-between">
                     <div>
@@ -1038,7 +1038,7 @@
 
             <!-- Tab 4: Server Configuration -->
             <div x-show="activeTab === 'server'" x-data="window.Components.serverConfig()"
-                class="space-y-6 max-w-2xl animate-fade-in pb-10">
+                class="space-y-6 animate-fade-in pb-10">
                 <!-- 🔐 Security Section -->
                 <div class="view-card border-neon-yellow/20 bg-neon-yellow/5">
                     <div class="flex items-center justify-between">
