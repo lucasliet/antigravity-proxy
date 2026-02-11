@@ -13,7 +13,6 @@ import {
 } from '../constants.js';
 import { convertAnthropicToGoogle } from '../format/index.js';
 import { deriveSessionId } from './session-manager.js';
-import { buildFingerprintHeaders } from '../utils/fingerprint.js';
 
 /**
  * Build the wrapped request body for Cloud Code API
@@ -70,17 +69,13 @@ export function buildCloudCodeRequest(anthropicRequest, projectId) {
  * @param {string} token - OAuth access token
  * @param {string} model - Model name
  * @param {string} accept - Accept header value (default: 'application/json')
- * @param {Object} [fingerprint] - Optional device fingerprint for header randomization
  * @returns {Object} Headers object
  */
-export function buildHeaders(token, model, accept = 'application/json', fingerprint = null) {
-    const fingerprintHeaders = fingerprint ? buildFingerprintHeaders(fingerprint) : {};
-
+export function buildHeaders(token, model, accept = 'application/json') {
     const headers = {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
-        ...ANTIGRAVITY_HEADERS,
-        ...fingerprintHeaders
+        ...ANTIGRAVITY_HEADERS
     };
 
     const modelFamily = getModelFamily(model);

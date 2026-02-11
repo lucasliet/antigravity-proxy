@@ -157,7 +157,7 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
 
                     const response = await throttledFetch(url, {
                         method: 'POST',
-                        headers: buildHeaders(token, model, isThinking ? 'text/event-stream' : 'application/json', account.fingerprint),
+                        headers: buildHeaders(token, model, isThinking ? 'text/event-stream' : 'application/json'),
                         body: JSON.stringify(payload)
                     });
 

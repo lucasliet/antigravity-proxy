@@ -299,7 +299,6 @@ Without this, the WebUI's Claude CLI tab won't be able to read or write your Cla
 
 - [Available Models](docs/models.md)
 - [Multi-Account Load Balancing](docs/load-balancing.md)
-- [Device Fingerprinting](docs/fingerprinting.md)
 - [Web Management Console](docs/web-console.md)
 - [Advanced Configuration](docs/configuration.md)
 - [macOS Menu Bar App](docs/menubar-app.md)
