@@ -139,7 +139,7 @@ export async function sendMessage(anthropicRequest, accountManager, fallbackEnab
             // Get token and project for this account
             const token = await accountManager.getTokenForAccount(account);
             const project = await accountManager.getProjectForAccount(account, token);
-            const payload = buildCloudCodeRequest(anthropicRequest, project);
+            const payload = buildCloudCodeRequest(anthropicRequest, project, account.email);
 
             logger.debug(`[CloudCode] Sending request for model: ${model}`);
 

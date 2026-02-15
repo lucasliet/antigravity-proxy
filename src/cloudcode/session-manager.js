@@ -14,9 +14,10 @@ import crypto from 'crypto';
  * enabling prompt caching (cache is scoped to session + organization).
  *
  * @param {Object} anthropicRequest - The Anthropic-format request
+ * @param {string} accountEmail - The account email to make session IDs unique per account
  * @returns {string} A stable session ID (32 hex characters) or random UUID if no user message
  */
-export function deriveSessionId(anthropicRequest) {
+export function deriveSessionId(anthropicRequest, accountEmail) {
     const messages = anthropicRequest.messages || [];
 
     // Find the first user message
@@ -35,8 +36,13 @@ export function deriveSessionId(anthropicRequest) {
             }
 
             if (content) {
+                // Include account email in the content to be hashed to ensure 
+                // unique session IDs per account for the same conversation.
+                // This prevents Google from correlating sessions across accounts.
+                const saltedContent = accountEmail ? `${accountEmail}:${content}` : content;
+
                 // Hash the content with SHA256, return first 32 hex chars
-                const hash = crypto.createHash('sha256').update(content).digest('hex');
+                const hash = crypto.createHash('sha256').update(saltedContent).digest('hex');
                 return hash.substring(0, 32);
             }
         }
