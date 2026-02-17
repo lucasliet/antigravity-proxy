@@ -68,21 +68,28 @@ node tests/test-strategies.cjs
 
 **Request Flow:**
 ```
-Claude Code CLI → Express Server (server.js) → CloudCode Client → Antigravity Cloud Code API
+Client (Claude Code CLI or OpenAI SDK) → Express Server (server.js) → CloudCode Client → Antigravity Cloud Code API
 ```
+
+**API Format Support:**
+- **Anthropic Messages API:** `/v1/messages` (native format)
+- **OpenAI Chat Completions API:** `/v1/chat/completions` (compatibility layer)
+
+Both endpoints share the same internal pipeline after format conversion.
 
 **Directory Structure:**
 
 ```
 src/
 ├── index.js                    # Entry point
-├── server.js                   # Express server
+├── server.js                   # Express server (Anthropic + OpenAI endpoints)
 ├── constants.js                # Configuration values
 ├── errors.js                   # Custom error classes
 ├── fallback-config.js          # Model fallback mappings and helpers
 │
 ├── cloudcode/                  # Cloud Code API client
 │   ├── index.js                # Public API exports
+│   ├── direct-auth.js          # Direct refresh token authentication (bypasses AccountManager)
 │   ├── session-manager.js      # Session ID derivation for caching
 │   ├── rate-limit-parser.js    # Parse reset times from headers/errors
 │   ├── request-builder.js      # Build API request payloads
@@ -123,14 +130,20 @@ src/
 ├── cli/                        # CLI tools
 │   └── accounts.js             # Account management CLI
 │
-├── format/                     # Format conversion (Anthropic ↔ Google)
+├── format/                     # Format conversion
 │   ├── index.js                # Re-exports all converters
 │   ├── request-converter.js    # Anthropic → Google conversion
 │   ├── response-converter.js   # Google → Anthropic conversion
 │   ├── content-converter.js    # Message content conversion
 │   ├── schema-sanitizer.js     # JSON Schema cleaning for Gemini
 │   ├── thinking-utils.js       # Thinking block validation/recovery
-│   └── signature-cache.js      # Signature cache (tool_use + thinking signatures)
+│   ├── signature-cache.js      # Signature cache (tool_use + thinking signatures)
+│   └── openai/                 # OpenAI API compatibility layer
+│       ├── index.js            # Re-exports OpenAI converters
+│       ├── request-converter.js    # OpenAI → Anthropic conversion
+│       ├── response-converter.js   # Anthropic → OpenAI conversion
+│       ├── stream-adapter.js   # Anthropic SSE → OpenAI SSE conversion
+│       └── error-formatter.js  # Error formatting for OpenAI format
 │
 └── utils/                      # Utilities
     ├── claude-config.js        # Claude CLI settings file I/O (supports CLAUDE_CONFIG_PATH env var)
@@ -185,6 +198,7 @@ public/
 - **src/server.js**: Express server exposing Anthropic-compatible endpoints (`/v1/messages`, `/v1/models`, `/health`, `/account-limits`) and mounting WebUI
 - **src/webui/index.js**: WebUI backend handling API routes (`/api/*`) for config, accounts, and logs
 - **src/cloudcode/**: Cloud Code API client with retry/failover logic, streaming and non-streaming support
+  - `direct-auth.js`: Direct refresh token authentication (bypasses AccountManager pool)
   - `model-api.js`: Model listing, quota retrieval (`getModelQuotas()`), and subscription tier detection (`getSubscriptionTier()`)
 - **src/account-manager/**: Multi-account pool with configurable selection strategies, rate limit handling, and automatic cooldown
   - Strategies: `sticky` (cache-optimized), `round-robin` (load-balanced), `hybrid` (smart distribution)
@@ -196,6 +210,15 @@ public/
 - **src/modules/usage-stats.js**: Tracks request volume by model/family, persists 30-day history to JSON, and auto-prunes old data.
 - **src/fallback-config.js**: Model fallback mappings (`getFallbackModel()`, `hasFallback()`)
 - **src/errors.js**: Custom error classes (`RateLimitError`, `AuthError`, `ApiError`, etc.)
+
+**Authentication Modes:**
+The proxy supports three authentication modes (in priority order):
+1. **Direct Refresh Token (Header)**: Client sends Antigravity refresh token in `x-api-key` (Anthropic) or `Authorization: Bearer` (OpenAI) header
+   - Bypasses AccountManager pool completely
+   - No retry/failover, quota tracking, or prompt caching
+   - Useful for quick testing or single-account scenarios
+2. **Environment Variable**: `ANTIGRAVITY_REFRESH_TOKEN` - same as header mode, but set globally for all requests
+3. **Account Pool**: Multi-account pool configured via WebUI or CLI (production mode with full features)
 
 **Multi-Account Load Balancing:**
 - Configurable selection strategy via `--strategy` flag or WebUI

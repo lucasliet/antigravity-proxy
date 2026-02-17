@@ -53,6 +53,7 @@ export async function listModels(token) {
             object: 'model',
             created: Math.floor(Date.now() / 1000),
             owned_by: 'anthropic',
+            name: modelData.displayName || modelId,
             description: modelData.displayName || modelId
         }));
 

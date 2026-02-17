@@ -11,6 +11,12 @@ import { fileURLToPath } from 'url';
 import { sendMessage, sendMessageStream, listModels, getModelQuotas, getSubscriptionTier, isValidModel } from './cloudcode/index.js';
 import { mountWebUI } from './webui/index.js';
 import { config } from './config.js';
+import {
+    convertOpenAIToAnthropic,
+    convertAnthropicToOpenAI,
+    adaptAnthropicStreamToOpenAI,
+    parseErrorOpenAI
+} from './format/openai/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,6 +27,7 @@ import { clearThinkingSignatureCache } from './format/signature-cache.js';
 import { formatDuration } from './utils/helpers.js';
 import { logger } from './utils/logger.js';
 import usageStats from './modules/usage-stats.js';
+import { isRefreshToken, buildDirectAuth } from './cloudcode/direct-auth.js';
 
 // Parse fallback flag directly from command line args to avoid circular dependency
 const args = process.argv.slice(2);
@@ -81,11 +88,6 @@ app.use(express.json({ limit: REQUEST_BODY_LIMIT }));
 
 // API Key authentication middleware for /v1/* endpoints
 app.use('/v1', (req, res, next) => {
-    // Skip validation if apiKey is not configured
-    if (!config.apiKey) {
-        return next();
-    }
-
     const authHeader = req.headers['authorization'];
     const xApiKey = req.headers['x-api-key'];
 
@@ -94,6 +96,19 @@ app.use('/v1', (req, res, next) => {
         providedKey = authHeader.substring(7);
     } else if (xApiKey) {
         providedKey = xApiKey;
+    }
+
+    // Check if provided key is a refresh token (Antigravity direct auth)
+    // Refresh tokens bypass the proxy API key requirement
+    if (providedKey && isRefreshToken(providedKey)) {
+        req.directRefreshToken = providedKey;
+        logger.debug('[API] Detected direct refresh token in header');
+        return next();
+    }
+
+    // Standard proxy API key validation
+    if (!config.apiKey) {
+        return next();
     }
 
     if (!providedKey || providedKey !== config.apiKey) {
@@ -345,9 +360,56 @@ app.get('/health', async (req, res) => {
 app.get('/account-limits', async (req, res) => {
     try {
         await ensureInitialized();
-        const allAccounts = accountManager.getAllAccounts();
         const format = req.query.format || 'json';
         const includeHistory = req.query.includeHistory === 'true';
+
+        // Check for direct auth mode (header or env var)
+        const directRefreshToken = req.directRefreshToken || process.env.ANTIGRAVITY_REFRESH_TOKEN || null;
+        
+        if (directRefreshToken) {
+            logger.info('[Server] /account-limits using direct refresh token mode');
+            
+            try {
+                // Build direct auth and get subscription
+                const { accessToken, projectId, subscription } = await buildDirectAuth(directRefreshToken);
+                
+                // Fetch quotas for all available models
+                const quotas = await getModelQuotas(accessToken, projectId);
+                const models = await listModels();
+                
+                const response = {
+                    mode: 'direct',
+                    accounts: [{
+                        email: 'Direct Token',
+                        enabled: true,
+                        status: 'ok',
+                        subscription: subscription || { tier: 'unknown', projectId },
+                        limits: { note: 'Using direct refresh token - advanced quota tracking unavailable' },
+                        models: quotas
+                    }],
+                    models,
+                    globalQuotaThreshold: config.globalQuotaThreshold
+                };
+                
+                if (includeHistory) {
+                    response.usage = usageStats.getHistory();
+                }
+                
+                return res.json(response);
+            } catch (error) {
+                logger.error('[Server] Direct auth failed in /account-limits:', error.message);
+                return res.status(500).json({
+                    type: 'error',
+                    error: {
+                        type: 'api_error',
+                        message: `Direct authentication failed: ${error.message}`
+                    }
+                });
+            }
+        }
+
+        // POOL MODE: Standard account pool logic
+        const allAccounts = accountManager.getAllAccounts();
 
         // Fetch quotas for each account in parallel
         const results = await Promise.allSettled(
@@ -772,6 +834,12 @@ app.post('/v1/messages', async (req, res) => {
 
         logger.info(`[API] Request for model: ${request.model}, stream: ${!!stream}`);
 
+        // Get direct refresh token if present (from header or env var)
+        const directRefreshToken = req.directRefreshToken || process.env.ANTIGRAVITY_REFRESH_TOKEN || null;
+        if (directRefreshToken) {
+            logger.info('[API] Using direct refresh token authentication');
+        }
+
         // Debug: Log message structure to diagnose tool_use/tool_result ordering
         if (logger.isDebugEnabled) {
             logger.debug('[API] Message structure:');
@@ -790,7 +858,7 @@ app.post('/v1/messages', async (req, res) => {
 
             try {
                 // Initialize the generator
-                const generator = sendMessageStream(request, accountManager, FALLBACK_ENABLED);
+                const generator = sendMessageStream(request, accountManager, FALLBACK_ENABLED, directRefreshToken);
                 
                 // BUFFERING STRATEGY:
                 // Pull the first event *before* sending headers. 
@@ -848,7 +916,7 @@ app.post('/v1/messages', async (req, res) => {
 
         } else {
             // Handle non-streaming response
-            const response = await sendMessage(request, accountManager, FALLBACK_ENABLED);
+            const response = await sendMessage(request, accountManager, FALLBACK_ENABLED, directRefreshToken);
             res.json(response);
         }
 
@@ -888,6 +956,104 @@ app.post('/v1/messages', async (req, res) => {
                     message: errorMessage
                 }
             });
+        }
+    }
+});
+
+/**
+ * OpenAI Chat Completions API endpoint
+ * POST /v1/chat/completions
+ */
+app.post('/v1/chat/completions', async (req, res) => {
+    try {
+        // Ensure account manager is initialized
+        await ensureInitialized();
+
+        // Convert OpenAI request to Anthropic internal format
+        const anthropicRequest = convertOpenAIToAnthropic(req.body);
+
+        logger.info(`[API] OpenAI Chat Completions request for model: ${anthropicRequest.model}, stream: ${!!anthropicRequest.stream}`);
+
+        // Get direct refresh token if present (from header or env var)
+        const directRefreshToken = req.directRefreshToken || process.env.ANTIGRAVITY_REFRESH_TOKEN || null;
+        if (directRefreshToken) {
+            logger.info('[API] Using direct refresh token authentication');
+        }
+
+        if (anthropicRequest.stream) {
+            // Handle streaming response
+            try {
+                // Initialize the generator
+                const generator = sendMessageStream(anthropicRequest, accountManager, FALLBACK_ENABLED, directRefreshToken);
+
+                // BUFFERING STRATEGY: Pull the first event before sending headers
+                const firstResult = await generator.next();
+
+                // If we get here, the stream started successfully
+                res.status(200);
+                res.setHeader('Content-Type', 'text/event-stream');
+                res.setHeader('Cache-Control', 'no-cache');
+                res.setHeader('Connection', 'keep-alive');
+                res.setHeader('X-Accel-Buffering', 'no');
+                res.flushHeaders();
+
+                // Reconstruct generator with first result
+                async function* reconstructedGenerator() {
+                    if (!firstResult.done) {
+                        yield firstResult.value;
+                    }
+                    for await (const event of generator) {
+                        yield event;
+                    }
+                }
+
+                // Adapt Anthropic events to OpenAI chunks and stream
+                for await (const chunk of adaptAnthropicStreamToOpenAI(reconstructedGenerator(), anthropicRequest.model)) {
+                    if (chunk === '[DONE]') {
+                        res.write('data: [DONE]\n\n');
+                    } else {
+                        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+                    }
+                    if (res.flush) res.flush();
+                }
+
+                res.end();
+
+            } catch (error) {
+                // If we haven't sent headers yet, we can send a proper error status
+                if (!res.headersSent) {
+                    logger.error('[API] OpenAI stream initial error:', error);
+                    const { statusCode, error: errorObj } = parseErrorOpenAI(error);
+
+                    return res.status(statusCode).json(errorObj);
+                }
+
+                // If headers were already sent, send error as SSE event
+                logger.error('[API] OpenAI stream mid-stream error:', error);
+                const { error: errorObj } = parseErrorOpenAI(error);
+
+                res.write(`data: ${JSON.stringify({ error: errorObj })}\n\n`);
+                res.end();
+            }
+
+        } else {
+            // Handle non-streaming response
+            const anthropicResponse = await sendMessage(anthropicRequest, accountManager, FALLBACK_ENABLED, directRefreshToken);
+            const openaiResponse = convertAnthropicToOpenAI(anthropicResponse);
+            res.json(openaiResponse);
+        }
+
+    } catch (error) {
+        logger.error('[API] OpenAI Chat Completions error:', error);
+        const { statusCode, error: errorObj } = parseErrorOpenAI(error);
+
+        // Check if headers have already been sent (for streaming that failed mid-way)
+        if (res.headersSent) {
+            logger.warn('[API] Headers already sent, writing error as SSE event');
+            res.write(`data: ${JSON.stringify({ error: errorObj })}\n\n`);
+            res.end();
+        } else {
+            res.status(statusCode).json(errorObj);
         }
     }
 });

@@ -35,6 +35,7 @@ import {
     calculateSmartBackoff
 } from './rate-limit-state.js';
 import crypto from 'crypto';
+import { buildDirectAuth } from './direct-auth.js';
 
 /**
  * Send a streaming request to Cloud Code with multi-account support
@@ -46,11 +47,66 @@ import crypto from 'crypto';
  * @param {number} [anthropicRequest.max_tokens] - Maximum tokens to generate
  * @param {Object} [anthropicRequest.thinking] - Thinking configuration
  * @param {import('../account-manager/index.js').default} accountManager - The account manager instance
+ * @param {boolean} [fallbackEnabled=false] - Enable model fallback on quota exhaustion
+ * @param {string} [directRefreshToken=null] - Direct refresh token (bypasses account pool)
  * @yields {Object} Anthropic-format SSE events (message_start, content_block_start, content_block_delta, etc.)
  * @throws {Error} If max retries exceeded or no accounts available
  */
-export async function* sendMessageStream(anthropicRequest, accountManager, fallbackEnabled = false) {
+export async function* sendMessageStream(anthropicRequest, accountManager, fallbackEnabled = false, directRefreshToken = null) {
     const model = anthropicRequest.model;
+
+    // DIRECT AUTH MODE: Use refresh token from header (bypass AccountManager)
+    if (directRefreshToken) {
+        logger.info('[CloudCode] Using direct refresh token authentication for streaming (bypassing account pool)');
+        
+        try {
+            // Get access token and project from refresh token
+            const { accessToken, projectId } = await buildDirectAuth(directRefreshToken);
+            
+            // Build request payload
+            const payload = buildCloudCodeRequest(anthropicRequest, projectId, 'direct-token');
+            const headers = buildHeaders(accessToken, model, 'text/event-stream');
+            
+            // Try each endpoint (no retry/failover)
+            let lastError = null;
+            for (const endpoint of ANTIGRAVITY_ENDPOINT_FALLBACKS) {
+                try {
+                    const url = `${endpoint}/v1internal:streamGenerateContent?alt=sse`;
+                    
+                    const response = await throttledFetch(url, {
+                        method: 'POST',
+                        headers,
+                        body: JSON.stringify(payload)
+                    });
+                    
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        lastError = new Error(`HTTP ${response.status}: ${errorText}`);
+                        logger.warn(`[CloudCode] Direct auth streaming request failed at ${endpoint}: ${lastError.message}`);
+                        continue;
+                    }
+                    
+                    // Stream SSE events
+                    logger.success('[CloudCode] Direct auth streaming request started successfully');
+                    yield* streamSSEResponse(response, model, anthropicRequest);
+                    return;
+                    
+                } catch (error) {
+                    lastError = error;
+                    logger.warn(`[CloudCode] Streaming error at ${endpoint}: ${error.message}`);
+                }
+            }
+            
+            // All endpoints failed
+            throw lastError || new Error('All endpoints failed for direct auth streaming request');
+            
+        } catch (error) {
+            logger.error('[CloudCode] Direct auth streaming request failed:', error.message);
+            throw error;
+        }
+    }
+
+    // POOL MODE: Standard multi-account logic with retry/failover
 
     // Retry loop with account failover
     // Ensure we try at least as many times as there are accounts to cycle through everyone

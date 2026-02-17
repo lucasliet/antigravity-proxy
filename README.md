@@ -95,11 +95,51 @@ npm start
 
 The server runs on `http://localhost:8080` by default.
 
-### 2. Link Account(s)
+### 2. Authentication
 
-Choose one of the following methods to authorize the proxy:
+The proxy supports three authentication methods (in priority order):
 
-#### **Method A: Web Dashboard (Recommended)**
+#### **Method 1: Direct Refresh Token (Quick Start)**
+
+For quick testing or personal use, you can provide your Antigravity refresh token directly without configuring accounts:
+
+**Option A: Environment Variable**
+
+```bash
+export ANTIGRAVITY_REFRESH_TOKEN="your-refresh-token-here"
+npm start
+```
+
+**Option B: Request Header**
+
+When making API requests, include your refresh token in the header:
+
+```bash
+# Anthropic format (x-api-key header)
+curl -X POST http://localhost:8080/v1/messages \
+  -H "x-api-key: your-refresh-token-here" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "claude-sonnet-4-5-thinking", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 100}'
+
+# OpenAI format (Authorization header)
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer your-refresh-token-here" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "claude-sonnet-4-5-thinking", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+**How to get your refresh token:**
+1. Install Antigravity app and log in with your Google account
+2. Find your token in Antigravity's local database (usually at `~/.antigravity/db.sqlite`)
+3. Use a SQLite browser to extract the `refresh_token` from the `auth` table
+
+> **Note:** Direct token mode bypasses account pool management, quota tracking, and prompt caching. For production use, configure account pool instead (Method 2).
+
+#### **Method 2: Account Pool (Production)**
+
+For multiple accounts, load balancing, and advanced features, configure the account pool:
+
+##### **Method 2A: Web Dashboard (Recommended)**
 
 1. With the proxy running, open `http://localhost:8080` in your browser.
 2. Navigate to the **Accounts** tab and click **Add Account**.
@@ -107,7 +147,7 @@ Choose one of the following methods to authorize the proxy:
 
 > **Headless/Remote Servers**: If running on a server without a browser, the WebUI supports a "Manual Authorization" mode. After clicking "Add Account", you can copy the OAuth URL, complete authorization on your local machine, and paste the authorization code back.
 
-#### **Method B: CLI (Desktop or Headless)**
+##### **Method 2B: CLI (Desktop or Headless)**
 
 If you prefer the terminal or are on a remote server:
 
@@ -121,7 +161,7 @@ antigravity-claude-proxy accounts add --no-browser
 
 > For full CLI account management options, run `antigravity-claude-proxy accounts --help`.
 
-#### **Method C: Automatic (Antigravity Users)**
+##### **Method 2C: Automatic (Antigravity App)**
 
 If you have the **Antigravity** app installed and logged in, the proxy will automatically detect your local session. No additional setup is required.
 
@@ -297,8 +337,60 @@ Without this, the WebUI's Claude CLI tab won't be able to read or write your Cla
 
 ---
 
+## Using with OpenAI-Compatible Clients
+
+The proxy supports the **OpenAI Chat Completions API** format, allowing you to use any OpenAI-compatible client or SDK:
+
+```python
+# Python example with account pool
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8080/v1",
+    api_key="test"  # Proxy API key (if configured)
+)
+
+response = client.chat.completions.create(
+    model="gemini-3-flash",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+
+print(response.choices[0].message.content)
+```
+
+**Using with Direct Refresh Token:**
+
+```python
+# Python example with direct refresh token (no account pool needed)
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8080/v1",
+    api_key="your-antigravity-refresh-token"  # Your Antigravity refresh token
+)
+
+response = client.chat.completions.create(
+    model="claude-sonnet-4-5-thinking",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+
+print(response.choices[0].message.content)
+```
+
+**Supported:**
+- ✅ Streaming (SSE with `data: [DONE]`)
+- ✅ Tool calling (function calling)
+- ✅ Reasoning content (`thinking` ↔ `reasoning_content`)
+- ✅ Direct refresh token authentication (bypasses account pool)
+- ✅ Continue.dev, Cursor, LangChain, and other OpenAI-compatible tools
+
+See [OpenAI API Compatibility](docs/openai-compat.md) for detailed documentation.
+
+---
+
 ## Documentation
 
+- [**OpenAI API Compatibility**](docs/openai-compat.md) - Use with OpenAI clients
 - [Available Models](docs/models.md)
 - [Multi-Account Load Balancing](docs/load-balancing.md)
 - [Web Management Console](docs/web-console.md)

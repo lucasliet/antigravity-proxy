@@ -129,6 +129,7 @@ ${controlSection}
 ║                                                              ║
 ║  Endpoints:                                                  ║
 ║    POST /v1/messages         - Anthropic Messages API        ║
+║    POST /v1/chat/completions - OpenAI Chat Completions API   ║
 ║    GET  /v1/models           - List available models         ║
 ║    GET  /health              - Health check                  ║
 ║    GET  /account-limits      - Account status & quotas       ║
@@ -140,7 +141,12 @@ ${border}    ${align4(`Storage: ${CONFIG_DIR}`)}${border}
 ║  Usage with Claude Code:                                     ║
 ${border}    ${align4(`export ANTHROPIC_BASE_URL=http://localhost:${PORT}`)}${border}
 ${border}    ${align4(`export ANTHROPIC_API_KEY=${config.apiKey || 'dummy'}`)}${border}
-║    claude                                                    ║
+${border}    ${align4(`claude`)}${border}
+║                                                              ║
+║  Usage with OpenAI-compatible clients:                       ║
+${border}    ${align4(`export OPENAI_API_BASE=http://localhost:${PORT}/v1`)}${border}
+${border}    ${align4(`export OPENAI_API_KEY=${config.apiKey || 'dummy'}`)}${border}
+${border}    ${align4(`(Continue.Dev, Cursor, etc.)`)}${border}
 ║                                                              ║
 ║  Add Google accounts:                                        ║
 ║    npm run accounts                                          ║

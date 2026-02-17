@@ -1,0 +1,40 @@
+---
+services:
+  antigravity-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # image: ghcr.io/lucasliet/antigravity-proxy:latest
+    container_name: antigravity-proxy
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Server Configuration
+      - PORT=8080
+      - HOST=0.0.0.0
+      
+      # Optional: API Key Authentication
+      # - ANTIGRAVITY_REFRESH_TOKEN=your-secret-key-here
+      
+    
+    volumes:
+      # Persist account configuration and usage history
+      - ./config:/home/nodejs/.config/antigravity-proxy
+      
+      # Optional: Mount Claude CLI config from host
+      # - ~/.claude:/home/nodejs/.claude:ro
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    
+    networks:
+      - proxy-network
+
+networks:
+  proxy-network:
+    driver: bridge

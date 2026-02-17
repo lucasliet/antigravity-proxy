@@ -1,0 +1,57 @@
+# Node modules
+node_modules
+npm-debug.log
+
+# Runtime data
+.config
+data
+*.log
+
+# Development files
+.git
+.github
+.gitignore
+.gitattributes
+.npmignore
+*.md
+!README.md
+!CLAUDE.md
+docs/*.md
+!docs/openai-compat.md
+!docs/api-endpoints.md
+!docs/models.md
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+tests
+coverage
+.nyc_output
+
+# CI/CD
+.travis.yml
+.gitlab-ci.yml
+azure-pipelines.yml
+
+# Temporary files
+tmp
+temp
+*.tmp
+*.bak
+
+# Environment files (should be provided at runtime)
+.env
+.env.*
+
+# Build artifacts
+dist
+build

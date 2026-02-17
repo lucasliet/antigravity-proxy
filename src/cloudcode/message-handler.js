@@ -35,6 +35,7 @@ import {
     extractVerificationUrl,
     calculateSmartBackoff
 } from './rate-limit-state.js';
+import { buildDirectAuth } from './direct-auth.js';
 
 /**
  * Send a non-streaming request to Cloud Code with multi-account support
@@ -46,12 +47,78 @@ import {
  * @param {number} [anthropicRequest.max_tokens] - Maximum tokens to generate
  * @param {Object} [anthropicRequest.thinking] - Thinking configuration
  * @param {import('../account-manager/index.js').default} accountManager - The account manager instance
+ * @param {boolean} [fallbackEnabled=false] - Enable model fallback on quota exhaustion
+ * @param {string} [directRefreshToken=null] - Direct refresh token (bypasses account pool)
  * @returns {Promise<Object>} Anthropic-format response object
  * @throws {Error} If max retries exceeded or no accounts available
  */
-export async function sendMessage(anthropicRequest, accountManager, fallbackEnabled = false) {
+export async function sendMessage(anthropicRequest, accountManager, fallbackEnabled = false, directRefreshToken = null) {
     const model = anthropicRequest.model;
     const isThinking = isThinkingModel(model);
+
+    // DIRECT AUTH MODE: Use refresh token from header (bypass AccountManager)
+    if (directRefreshToken) {
+        logger.info('[CloudCode] Using direct refresh token authentication (bypassing account pool)');
+        
+        try {
+            // Get access token and project from refresh token
+            const { accessToken, projectId } = await buildDirectAuth(directRefreshToken);
+            
+            // Build request payload
+            const payload = buildCloudCodeRequest(anthropicRequest, projectId, 'direct-token');
+            const headers = buildHeaders(accessToken, model);
+            
+            // Try each endpoint (no retry/failover)
+            let lastError = null;
+            for (const endpoint of ANTIGRAVITY_ENDPOINT_FALLBACKS) {
+                try {
+                    const url = isThinking
+                        ? `${endpoint}/v1internal:streamGenerateContent?alt=sse`
+                        : `${endpoint}/v1internal:generateContent`;
+                    
+                    const response = await throttledFetch(url, {
+                        method: 'POST',
+                        headers,
+                        body: JSON.stringify(payload)
+                    });
+                    
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        lastError = new Error(`HTTP ${response.status}: ${errorText}`);
+                        logger.warn(`[CloudCode] Direct auth request failed at ${endpoint}: ${lastError.message}`);
+                        continue;
+                    }
+                    
+                    // Parse response based on model type
+                    let result;
+                    if (isThinking) {
+                        const responseText = await response.text();
+                        result = parseThinkingSSEResponse(responseText, model);
+                    } else {
+                        result = await response.json();
+                    }
+                    
+                    // Convert to Anthropic format
+                    const anthropicResponse = convertGoogleToAnthropic(result, model);
+                    logger.success('[CloudCode] Direct auth request completed successfully');
+                    return anthropicResponse;
+                    
+                } catch (error) {
+                    lastError = error;
+                    logger.warn(`[CloudCode] Error at ${endpoint}: ${error.message}`);
+                }
+            }
+            
+            // All endpoints failed
+            throw lastError || new Error('All endpoints failed for direct auth request');
+            
+        } catch (error) {
+            logger.error('[CloudCode] Direct auth request failed:', error.message);
+            throw error;
+        }
+    }
+
+    // POOL MODE: Standard multi-account logic with retry/failover
 
     // Retry loop with account failover
     // Ensure we try at least as many times as there are accounts to cycle through everyone
